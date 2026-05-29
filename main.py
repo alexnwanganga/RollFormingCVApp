@@ -430,7 +430,7 @@ with main_left:
         y_rim[acceptable],
         s=5,
         color="lime",
-        label=f"Within ±{curvature_tolerance:.1f}%"
+        #label=f"Within ±{curvature_tolerance:.1f}%"
     )
 
     ax.scatter(
@@ -438,7 +438,7 @@ with main_left:
         y_rim[too_tight],
         s=7,
         color="blue",
-        label="Too Flat"
+        #label="Too Flat"
     )
 
     ax.scatter(
@@ -446,7 +446,7 @@ with main_left:
         y_rim[too_flat],
         s=7,
         color="red",
-        label="Too Tight"
+        #label="Too Tight"
     )
 
     ax.axis("equal")
