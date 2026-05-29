@@ -3,15 +3,22 @@ import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st      # App framework for building interactive web apps in Python
 from PIL import Image       # Python Imaging Library for image manipulation
-from io import BytesIO
+from io import BytesIO      # For handling in-memory byte streams (used for image upload, specifically camera capture)
 
 from src.detection import load_detector, detect_and_crop_tank
 from src.preprocessing import generate_edge_map
 from src.rim_analysis import detect_rim_multistart
 from src.correction import compute_curvature_correction
 
+# -------------------------------------------------
+# STREAMLIT PAGE SETUP
+# -------------------------------------------------
 st.set_page_config(page_title="Roll Forming CV Analyzer", layout="wide")
 st.title("Roll Forming CV Analyzer")
+
+# -------------------------------------------------
+# CSS STYLES
+# -------------------------------------------------
 
 st.markdown(
     """
@@ -84,6 +91,12 @@ st.write(
 )
 
 
+# -------------------------------------------------
+# CACHED PIPELINE FUNCTIONS
+# -------------------------------------------------
+# Streamlit reruns the full script whenever a widget changes.
+# These cached functions prevent expensive operations from rerunning
+# unless their inputs actually change.
 @st.cache_resource
 def get_detector():
     return load_detector()
@@ -144,12 +157,17 @@ def fig_to_streamlit(fig):
     st.pyplot(fig)
     plt.close(fig)
 
-
+# -------------------------------------------------
+# IMAGE UPLOAD
+# -------------------------------------------------
 uploaded_file = st.file_uploader(
     "Upload rolled shell / tank image (Avoid complex backgrounds for best results)",
     type=["jpg", "jpeg", "png"]
 )
 
+# -------------------------------------------------
+# SIDEBAR CONTROLS
+# -------------------------------------------------
 st.sidebar.header("Detection Settings")
 
 use_auto_crop = st.sidebar.checkbox("Use Auto-Crop", value=True)
@@ -162,8 +180,8 @@ detection_threshold = st.sidebar.slider(
     0.05
 )
 
-canny_low = st.sidebar.slider("Low Threshold", 0, 255, 40)
-canny_high = st.sidebar.slider("High Threshold", 0, 255, 120)
+canny_low = st.sidebar.slider("Low Gradient Threshold", 0, 255, 40)
+canny_high = st.sidebar.slider("High Gradient Threshold", 0, 255, 120)
 
 blur_kernel = st.sidebar.selectbox(
     "Blur Kernel Size",
@@ -221,6 +239,9 @@ real_radius_inches = st.sidebar.number_input(
     step=1.0
 )
 
+# -------------------------------------------------
+# LOAD IMAGE
+# -------------------------------------------------
 if uploaded_file is None:
     st.info("Upload an image to begin.")
     st.stop()
