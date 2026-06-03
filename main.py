@@ -157,6 +157,30 @@ def fig_to_streamlit(fig):
     st.pyplot(fig)
     plt.close(fig)
 
+
+def format_signed_term(value, label):
+    sign = "+" if value >= 0 else "-"
+    return f"{sign} {abs(value):.2f}{label}"
+
+
+def fit_rim_equation(theta_uniform, radius_uniform_pixels, target_radius_pixels):
+    design_matrix = np.column_stack(
+        [
+            np.cos(2 * theta_uniform),
+            np.cos(theta_uniform),
+            np.ones_like(theta_uniform),
+        ]
+    )
+
+    radius_residual = radius_uniform_pixels - target_radius_pixels
+    ovality_amp, egg_amp, seam_amp = np.linalg.lstsq(
+        design_matrix,
+        radius_residual,
+        rcond=None
+    )[0]
+
+    return ovality_amp, egg_amp, seam_amp
+
 # -------------------------------------------------
 # IMAGE UPLOAD
 # -------------------------------------------------
@@ -388,6 +412,19 @@ too_flat = correction_output["too_flat"]
 too_tight = correction_output["too_tight"]
 acceptable = correction_output["acceptable"]
 
+ovality_amp_pixels, egg_amp_pixels, seam_amp_pixels = fit_rim_equation(
+    theta_uniform=theta_uniform,
+    radius_uniform_pixels=radius_uniform_pixels,
+    target_radius_pixels=target_radius_pixels
+)
+
+rim_equation_pixels = (
+    f"R(θ) = {target_radius_pixels:.2f} "
+    f"{format_signed_term(ovality_amp_pixels, 'cos(2θ)')} "
+    f"{format_signed_term(egg_amp_pixels, 'cos(θ)')} "
+    f"{format_signed_term(seam_amp_pixels, '')}"
+)
+
 # -------------------------------------------------
 # SUMMARY
 # -------------------------------------------------
@@ -399,8 +436,8 @@ col1, col2, col3, col4, col5, col6 = st.columns(6)
 col1.metric("Target Radius", f"{target_radius_inches:.2f} in")
 col2.metric("Target Radius", f"{target_radius_pixels:.1f} px")
 col3.metric("Within Tolerance", f"{correction_output['within_tolerance_percent']:.1f}%")
-col4.metric("Too Flat", f"{correction_output['too_flat_percent']:.1f}%")
-col5.metric("Too Tight", f"{correction_output['too_tight_percent']:.1f}%")
+col4.metric("Too Tight", f"{correction_output['too_flat_percent']:.1f}%")
+col5.metric("Too Flat", f"{correction_output['too_tight_percent']:.1f}%")
 col6.metric("Pixels/Inch", f"{pixels_per_inch:.2f}")
 
 force_col1, force_col2 = st.columns(2)
@@ -485,6 +522,24 @@ with main_right:
         <p>🔴 Too tight: decrease force</p>
         <p>🔵 Too flat: increase force</p>
         <p><span style="color:red;">- - -</span> Expected/manual circle</p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(
+        f"""
+        <div class="info-card">
+        <h4>Detected Rim Equation</h4>
+        <p><strong>R(θ) = Rₜ + A₀cos(2θ) + Aₑcos(θ) + Aₛ</strong></p>
+        <p class="small-note">
+        Fitted from detected rim points:
+        Rₜ = {target_radius_pixels:.2f} px,
+        A₀ = {ovality_amp_pixels:.2f} px,
+        Aₑ = {egg_amp_pixels:.2f} px,
+        Aₛ = {seam_amp_pixels:.2f} px.
+        </p>
+        <p class="small-note">{rim_equation_pixels}</p>
         </div>
         """,
         unsafe_allow_html=True
