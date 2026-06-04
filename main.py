@@ -1,4 +1,5 @@
 import cv2                  # Computer vision library for image processing
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 import streamlit as st      # App framework for building interactive web apps in Python
@@ -163,23 +164,130 @@ def format_signed_term(value, label):
     return f"{sign} {abs(value):.2f}{label}"
 
 
-def fit_rim_equation(theta_uniform, radius_uniform_pixels, target_radius_pixels):
+def solve_rim_equation(theta_values, radius_values, target_radius_pixels):
     design_matrix = np.column_stack(
         [
-            np.cos(2 * theta_uniform),
-            np.cos(theta_uniform),
-            np.ones_like(theta_uniform),
+            np.cos(3 * theta_values),
+            np.sin(3 * theta_values),
+            np.cos(2 * theta_values),
+            np.sin(2 * theta_values),
+            np.cos(theta_values),
+            np.sin(theta_values),
+            np.ones_like(theta_values),
         ]
     )
 
-    radius_residual = radius_uniform_pixels - target_radius_pixels
-    ovality_amp, egg_amp, seam_amp = np.linalg.lstsq(
+    radius_residual = radius_values - target_radius_pixels
+    third_cos, third_sin, ovality_cos, ovality_sin, egg_cos, egg_sin, seam_amp = np.linalg.lstsq(
         design_matrix,
         radius_residual,
         rcond=None
     )[0]
 
-    return ovality_amp, egg_amp, seam_amp
+    fitted_residual = design_matrix @ np.array(
+        [
+            third_cos,
+            third_sin,
+            ovality_cos,
+            ovality_sin,
+            egg_cos,
+            egg_sin,
+            seam_amp,
+        ]
+    )
+    fit_error = radius_residual - fitted_residual
+
+    return {
+        "third_cos": third_cos,
+        "third_sin": third_sin,
+        "ovality_cos": ovality_cos,
+        "ovality_sin": ovality_sin,
+        "egg_cos": egg_cos,
+        "egg_sin": egg_sin,
+        "seam_amp": seam_amp,
+        "third_amp": np.hypot(third_cos, third_sin),
+        "ovality_amp": np.hypot(ovality_cos, ovality_sin),
+        "egg_amp": np.hypot(egg_cos, egg_sin),
+        "third_phase": np.arctan2(third_sin, third_cos) / 3,
+        "ovality_phase": np.arctan2(ovality_sin, ovality_cos) / 2,
+        "egg_phase": np.arctan2(egg_sin, egg_cos),
+        "rmse": np.sqrt(np.mean(fit_error ** 2)),
+        "max_error": np.max(np.abs(fit_error)),
+    }
+
+
+def fit_rim_equation(
+    x_rim,
+    y_rim,
+    initial_center_x,
+    initial_center_y,
+    target_radius_pixels,
+    theta_plot
+):
+    def fit_for_center(test_center_x, test_center_y):
+        dx = x_rim - test_center_x
+        dy = y_rim - test_center_y
+        theta_values = np.mod(np.arctan2(dy, dx), 2 * np.pi)
+        radius_values = np.hypot(dx, dy)
+
+        fit = solve_rim_equation(
+            theta_values=theta_values,
+            radius_values=radius_values,
+            target_radius_pixels=target_radius_pixels
+        )
+        fit["center_x"] = test_center_x
+        fit["center_y"] = test_center_y
+
+        return fit
+
+    search_radius = max(20.0, target_radius_pixels * 0.04)
+    step = max(4.0, search_radius / 4)
+    best_fit = fit_for_center(initial_center_x, initial_center_y)
+
+    while step >= 0.5:
+        offsets = np.arange(-2, 3) * step
+
+        for offset_y in offsets:
+            for offset_x in offsets:
+                candidate_center_x = best_fit["center_x"] + offset_x
+                candidate_center_y = best_fit["center_y"] + offset_y
+                candidate_offset = np.hypot(
+                    candidate_center_x - initial_center_x,
+                    candidate_center_y - initial_center_y
+                )
+
+                if candidate_offset > search_radius:
+                    continue
+
+                candidate_fit = fit_for_center(
+                    candidate_center_x,
+                    candidate_center_y
+                )
+
+                if candidate_fit["rmse"] < best_fit["rmse"]:
+                    best_fit = candidate_fit
+
+        step /= 2
+
+    best_fit["center_offset"] = np.hypot(
+        best_fit["center_x"] - initial_center_x,
+        best_fit["center_y"] - initial_center_y
+    )
+
+    best_fit["radius_plot"] = (
+        target_radius_pixels
+        + best_fit["third_cos"] * np.cos(3 * theta_plot)
+        + best_fit["third_sin"] * np.sin(3 * theta_plot)
+        + best_fit["ovality_cos"] * np.cos(2 * theta_plot)
+        + best_fit["ovality_sin"] * np.sin(2 * theta_plot)
+        + best_fit["egg_cos"] * np.cos(theta_plot)
+        + best_fit["egg_sin"] * np.sin(theta_plot)
+        + best_fit["seam_amp"]
+    )
+    best_fit["x_plot"] = best_fit["center_x"] + best_fit["radius_plot"] * np.cos(theta_plot)
+    best_fit["y_plot"] = best_fit["center_y"] + best_fit["radius_plot"] * np.sin(theta_plot)
+
+    return best_fit
 
 # -------------------------------------------------
 # IMAGE UPLOAD
@@ -412,17 +520,96 @@ too_flat = correction_output["too_flat"]
 too_tight = correction_output["too_tight"]
 acceptable = correction_output["acceptable"]
 
-ovality_amp_pixels, egg_amp_pixels, seam_amp_pixels = fit_rim_equation(
-    theta_uniform=theta_uniform,
-    radius_uniform_pixels=radius_uniform_pixels,
-    target_radius_pixels=target_radius_pixels
+rim_fit = fit_rim_equation(
+    x_rim=x_rim,
+    y_rim=y_rim,
+    initial_center_x=center_x,
+    initial_center_y=center_y,
+    target_radius_pixels=target_radius_pixels,
+    theta_plot=theta_uniform
 )
+
+third_cos_pixels = rim_fit["third_cos"]
+third_sin_pixels = rim_fit["third_sin"]
+ovality_cos_pixels = rim_fit["ovality_cos"]
+ovality_sin_pixels = rim_fit["ovality_sin"]
+egg_cos_pixels = rim_fit["egg_cos"]
+egg_sin_pixels = rim_fit["egg_sin"]
+seam_amp_pixels = rim_fit["seam_amp"]
+third_amp_pixels = rim_fit["third_amp"]
+ovality_amp_pixels = rim_fit["ovality_amp"]
+egg_amp_pixels = rim_fit["egg_amp"]
+third_phase = rim_fit["third_phase"]
+ovality_phase = rim_fit["ovality_phase"]
+egg_phase = rim_fit["egg_phase"]
 
 rim_equation_pixels = (
     f"R(θ) = {target_radius_pixels:.2f} "
-    f"{format_signed_term(ovality_amp_pixels, 'cos(2θ)')} "
-    f"{format_signed_term(egg_amp_pixels, 'cos(θ)')} "
+    f"{format_signed_term(third_cos_pixels, 'cos(3θ)')} "
+    f"{format_signed_term(third_sin_pixels, 'sin(3θ)')} "
+    f"{format_signed_term(ovality_cos_pixels, 'cos(2θ)')} "
+    f"{format_signed_term(ovality_sin_pixels, 'sin(2θ)')} "
+    f"{format_signed_term(egg_cos_pixels, 'cos(θ)')} "
+    f"{format_signed_term(egg_sin_pixels, 'sin(θ)')} "
     f"{format_signed_term(seam_amp_pixels, '')}"
+)
+
+derived_x_rim = rim_fit["x_plot"]
+derived_y_rim = rim_fit["y_plot"]
+equation_center_x = rim_fit["center_x"]
+equation_center_y = rim_fit["center_y"]
+
+rim_equation_export = {
+    "equation_name": "Derived Rim Equation",
+    "equation_form": (
+        "R(theta) = Rt + A3c*cos(3*theta) + A3s*sin(3*theta) "
+        "+ A0c*cos(2*theta) + A0s*sin(2*theta) "
+        "+ Aec*cos(theta) + Aes*sin(theta) + As"
+    ),
+    "correction_form": "correction(theta) = Rt - R(theta)",
+    "units": {
+        "radius": "inches",
+        "theta": "radians"
+    },
+    "coefficients": {
+        "Rt": float(target_radius_inches),
+        "A3c": float(third_cos_pixels / pixels_per_inch),
+        "A3s": float(third_sin_pixels / pixels_per_inch),
+        "A0c": float(ovality_cos_pixels / pixels_per_inch),
+        "A0s": float(ovality_sin_pixels / pixels_per_inch),
+        "Aec": float(egg_cos_pixels / pixels_per_inch),
+        "Aes": float(egg_sin_pixels / pixels_per_inch),
+        "As": float(seam_amp_pixels / pixels_per_inch),
+    },
+    "amplitude_phase": {
+        "A3": float(third_amp_pixels / pixels_per_inch),
+        "phi3": float(third_phase),
+        "A0": float(ovality_amp_pixels / pixels_per_inch),
+        "phi0": float(ovality_phase),
+        "Ae": float(egg_amp_pixels / pixels_per_inch),
+        "phie": float(egg_phase),
+    },
+    "fit_quality": {
+        "rmse": float(rim_fit["rmse"] / pixels_per_inch),
+        "max_error": float(rim_fit["max_error"] / pixels_per_inch),
+    },
+}
+
+rim_equation_json = json.dumps(rim_equation_export, indent=2)
+rim_equation_csv = "\n".join(
+    [
+        "name,value,units",
+        f"Rt,{target_radius_inches:.10g},inches",
+        f"A3c,{third_cos_pixels / pixels_per_inch:.10g},inches",
+        f"A3s,{third_sin_pixels / pixels_per_inch:.10g},inches",
+        f"A0c,{ovality_cos_pixels / pixels_per_inch:.10g},inches",
+        f"A0s,{ovality_sin_pixels / pixels_per_inch:.10g},inches",
+        f"Aec,{egg_cos_pixels / pixels_per_inch:.10g},inches",
+        f"Aes,{egg_sin_pixels / pixels_per_inch:.10g},inches",
+        f"As,{seam_amp_pixels / pixels_per_inch:.10g},inches",
+        f"rmse,{rim_fit['rmse'] / pixels_per_inch:.10g},inches",
+        f"max_error,{rim_fit['max_error'] / pixels_per_inch:.10g},inches",
+    ]
 )
 
 # -------------------------------------------------
@@ -527,17 +714,41 @@ with main_right:
         unsafe_allow_html=True
     )
 
+    export_col1, export_col2 = st.columns(2)
+
+    with export_col1:
+        st.download_button(
+            label="Download Equation JSON",
+            data=rim_equation_json,
+            file_name="derived_rim_equation.json",
+            mime="application/json"
+        )
+
+    with export_col2:
+        st.download_button(
+            label="Download Coefficients CSV",
+            data=rim_equation_csv,
+            file_name="derived_rim_coefficients.csv",
+            mime="text/csv"
+        )
+
     st.markdown(
         f"""
         <div class="info-card">
-        <h4>Detected Rim Equation</h4>
-        <p><strong>R(θ) = Rₜ + A₀cos(2θ) + Aₑcos(θ) + Aₛ</strong></p>
+        <h4>Derived Rim Equation</h4>
+        <p><strong>R(θ) = Rₜ + A₃c cos(3θ) + A₃s sin(3θ) + A₀c cos(2θ) + A₀s sin(2θ) + Aₑc cos(θ) + Aₑs sin(θ) + Aₛ</strong></p>
         <p class="small-note">
         Fitted from detected rim points:
         Rₜ = {target_radius_pixels:.2f} px,
-        A₀ = {ovality_amp_pixels:.2f} px,
-        Aₑ = {egg_amp_pixels:.2f} px,
+        A₃ = {third_amp_pixels:.2f} px at φ₃ = {third_phase:.3f} rad,
+        A₀ = {ovality_amp_pixels:.2f} px at φ₀ = {ovality_phase:.3f} rad,
+        Aₑ = {egg_amp_pixels:.2f} px at φₑ = {egg_phase:.3f} rad,
         Aₛ = {seam_amp_pixels:.2f} px.
+        </p>
+        <p class="small-note">
+        Fit error: RMSE = {rim_fit["rmse"]:.2f} px,
+        max = {rim_fit["max_error"]:.2f} px,
+        center adjustment = {rim_fit["center_offset"]:.2f} px.
         </p>
         <p class="small-note">{rim_equation_pixels}</p>
         </div>
@@ -629,18 +840,42 @@ with plot2:
     fig_to_streamlit(fig)
 
 with plot3:
-    st.markdown("### Detected Rim")
+    st.markdown("### Derived Rim Equation")
 
     fig, ax = plt.subplots(figsize=(5, 4))
 
     ax.imshow(crop_rgb)
-    ax.plot(circle_x, circle_y, "r--", label="Expected Circle")
-    ax.scatter(x_rim, y_rim, s=4, color="lime", label="Detected Rim")
-    ax.scatter(center_x, center_y, color="lime", s=35, label="Center")
+    ax.scatter(
+        x_rim,
+        y_rim,
+        s=4,
+        color="red",
+        label="Detected Rim"
+    )
+    ax.plot(
+        derived_x_rim,
+        derived_y_rim,
+        color="lime",
+        linewidth=2,
+        label="Derived Rim Equation"
+    )
+    ax.scatter(
+        equation_center_x,
+        equation_center_y,
+        color="lime",
+        s=35,
+        label="Equation Center"
+    )
 
     ax.axis("equal")
-    ax.legend(fontsize=8)
-    ax.set_title("Detected Rim")
+    ax.legend(
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.08),
+        ncol=3,
+        fontsize=8
+    )
+    ax.set_title("Derived Rim Equation")
+    fig.tight_layout()
 
     fig_to_streamlit(fig)
 
