@@ -1,3 +1,11 @@
+"""Streamlit entry point for the roll-forming computer-vision workflow.
+
+This file intentionally owns the end-to-end user workflow: upload image,
+detect/crop the tank opening, extract the rim, compute correction guidance,
+and render the dashboard. The lower-level image processing helpers live under
+``src/``; keep reusable math or CV code there when extending the project.
+"""
+
 import cv2                  # Computer vision library for image processing
 import json
 import numpy as np
@@ -100,11 +108,18 @@ st.write(
 # unless their inputs actually change.
 @st.cache_resource
 def get_detector():
+    """Load the GroundingDINO detector once per Streamlit process.
+
+    The model is large and may download on first use through Hugging Face.
+    Keep this as a resource cache rather than a data cache because the detector
+    object is not plain serializable data.
+    """
     return load_detector()
 
 
 @st.cache_data(show_spinner=False)
 def cached_detection(image_bytes, threshold):
+    """Run object detection on stable bytes so Streamlit can cache the result."""
     image_for_detection = Image.open(BytesIO(image_bytes)).convert("RGB")
 
     detector = get_detector()
@@ -123,6 +138,7 @@ def cached_edge_map(
     canny_low,
     canny_high
 ):
+    """Cache Canny edge extraction for a crop and its preprocessing settings."""
     return generate_edge_map(
         crop_rgb=crop_rgb,
         blur_kernel=blur_kernel,
@@ -142,6 +158,7 @@ def cached_rim_detection(
     num_points,
     window_size
 ):
+    """Cache radial rim detection, which is the most parameter-sensitive step."""
     return detect_rim_multistart(
         edges=edges,
         center_x=center_x,
@@ -155,16 +172,30 @@ def cached_rim_detection(
 
 
 def fig_to_streamlit(fig):
+    """Render a Matplotlib figure and immediately release its memory."""
     st.pyplot(fig)
     plt.close(fig)
 
 
 def format_signed_term(value, label):
+    """Format equation terms without producing awkward '+ -' text."""
     sign = "+" if value >= 0 else "-"
     return f"{sign} {abs(value):.2f}{label}"
 
 
 def solve_rim_equation(theta_values, radius_values, target_radius_pixels):
+    """Fit a compact harmonic model to the radius error around the rim.
+
+    The model decomposes the rim into terms that are meaningful to downstream
+    manufacturing discussions:
+    - 3theta terms: three-lobed / roll-process variation.
+    - 2theta terms: ovality.
+    - 1theta terms: off-round, egg-shaped, or remaining center bias.
+    - constant term: overall radius offset from the target.
+
+    The fit is linear once the center is fixed, so least squares is sufficient.
+    Center refinement happens in ``fit_rim_equation`` below.
+    """
     design_matrix = np.column_stack(
         [
             np.cos(3 * theta_values),
@@ -224,6 +255,12 @@ def fit_rim_equation(
     target_radius_pixels,
     theta_plot
 ):
+    """Refine the center and produce plottable/exportable rim-equation data.
+
+    ``detect_rim_multistart`` starts from the user/manual center. Small center
+    errors can masquerade as first-harmonic shape error, so this function tries
+    nearby centers and keeps the one with the lowest fit RMSE.
+    """
     def fit_for_center(test_center_x, test_center_y):
         dx = x_rim - test_center_x
         dy = y_rim - test_center_y
@@ -240,10 +277,13 @@ def fit_rim_equation(
 
         return fit
 
+    # Search only a local neighborhood. A wider search may fit noise or the
+    # wrong edge instead of correcting modest manual/detection center error.
     search_radius = max(20.0, target_radius_pixels * 0.04)
     step = max(4.0, search_radius / 4)
     best_fit = fit_for_center(initial_center_x, initial_center_y)
 
+    # Coarse-to-fine grid search keeps this deterministic and dependency-free.
     while step >= 0.5:
         offsets = np.arange(-2, 3) * step
 
@@ -401,6 +441,8 @@ if use_auto_crop:
     best_detection = detection_output["best_detection"]
 
     if best_detection is None:
+        # Analysis can still proceed on the whole image; the manual geometry
+        # controls become more important when auto-crop fails.
         st.warning("No tank region detected. Using full image.")
         crop = image
     else:
@@ -513,6 +555,10 @@ pixels_per_inch = correction_output["pixels_per_inch"]
 target_radius_pixels = correction_output["target_radius_pixels"]
 target_radius_inches = correction_output["target_radius_inches"]
 
+# The lower-level correction helper uses the mathematical curvature sign.
+# The dashboard flips signs so positive values line up with operator-facing
+# "increase force / too flat" guidance. Preserve this convention when changing
+# labels, legends, or exported correction maps.
 curvature_error_percent = -correction_output["curvature_error_percent"]
 force_correction_percent = -correction_output["force_correction_percent"]
 
@@ -566,6 +612,8 @@ rim_equation_export = {
         "+ A0c*cos(2*theta) + A0s*sin(2*theta) "
         "+ Aec*cos(theta) + Aes*sin(theta) + As"
     ),
+    # Exported coefficients are converted to inches so they can be consumed
+    # outside the pixel-based UI by process engineers or downstream tooling.
     "correction_form": "correction(theta) = Rt - R(theta)",
     "units": {
         "radius": "inches",

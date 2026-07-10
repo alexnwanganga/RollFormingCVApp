@@ -1,8 +1,34 @@
-streamlit>=1.45
-opencv-python>=4.10
-numpy>=1.26
-matplotlib>=3.8
-Pillow>=10.0
-transformers>=4.50
-torch>=2.7
-torchvision>=0.22
+# Roll Forming CV Analyzer runtime dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Notes for maintainers:
+# - Python 3.10+ is recommended.
+# - The GroundingDINO model is loaded through Hugging Face Transformers and may
+#   download model weights on first run.
+# - CPU installs work, but detector inference is much faster with a PyTorch
+#   build that matches the user's CUDA/Metal environment.
+# - opencv-python-headless is preferred for Streamlit/server environments. If a
+#   future camera workflow needs native desktop camera backends, replace it with
+#   opencv-python instead of installing both.
+
+streamlit>=1.45,<2.0
+
+# Numeric, plotting, and image processing stack
+numpy>=1.26,<3.0
+matplotlib>=3.8,<4.0
+Pillow>=10.0,<12.0
+opencv-python-headless>=4.10,<5.0
+
+# Hugging Face / GroundingDINO detector stack
+transformers>=4.50,<5.0
+huggingface-hub>=0.24
+safetensors>=0.4
+
+# PyTorch runtime used by Transformers zero-shot object detection.
+# Users with GPU-specific needs may install the correct torch/torchvision
+# wheels first, then run:
+#   pip install -r requirements.txt
+torch>=2.3
+torchvision>=0.18

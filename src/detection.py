@@ -1,9 +1,19 @@
+"""Object-detection utilities for locating the tank/rim region.
+
+The app uses a zero-shot detector so the project can recognize likely tank
+openings without training a custom model. If accuracy becomes inconsistent in
+production, this is the module to replace with a fine-tuned detector or a more
+controlled segmentation pipeline.
+"""
+
 import cv2
 import numpy as np
 from transformers import pipeline
 
 
 DEFAULT_TANK_LABELS = [
+    # GroundingDINO is sensitive to wording. Keep several near-synonyms so one
+    # weak phrase does not prevent a usable crop on shop-floor photos.
     "large circular metal tank opening",
     "steel cylinder opening",
     "round metal shell",
@@ -12,6 +22,7 @@ DEFAULT_TANK_LABELS = [
 
 
 def load_detector():
+    """Create the Hugging Face zero-shot detector used by Streamlit caching."""
     detector = pipeline(
         model="IDEA-Research/grounding-dino-base",
         task="zero-shot-object-detection"
@@ -25,6 +36,13 @@ def detect_tank_region(
     candidate_labels=None,
     threshold=0.25
 ):
+    """Return raw detector boxes for candidate tank-opening labels.
+
+    Expected ``results`` item shape from transformers:
+    ``{"score": float, "label": str, "box": {"xmin", "ymin", "xmax", "ymax"}}``.
+    Downstream helpers rely on that structure, so update them together if the
+    detector/model API changes.
+    """
     if candidate_labels is None:
         candidate_labels = DEFAULT_TANK_LABELS
 
@@ -38,6 +56,7 @@ def detect_tank_region(
 
 
 def draw_detection_boxes(image, results):
+    """Draw detector output for the optional UI expander."""
     image_np = np.array(image).copy()
 
     for result in results:
@@ -72,6 +91,11 @@ def draw_detection_boxes(image, results):
 
 
 def crop_best_detection(image, results):
+    """Crop to the highest-confidence detection.
+
+    If no detection is available, return the original image and ``None`` so the
+    caller can continue with manual geometry instead of failing the whole run.
+    """
     if len(results) == 0:
         return image, None
 
@@ -96,6 +120,7 @@ def detect_and_crop_tank(
     candidate_labels=None,
     threshold=0.25
 ):
+    """Run detection, produce the annotated preview, and crop the best region."""
     results = detect_tank_region(
         image=image,
         detector=detector,

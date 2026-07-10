@@ -1,3 +1,11 @@
+"""Rim extraction from a binary edge map.
+
+This module assumes the caller already knows an approximate center and radius.
+It searches along radial rays, selects a continuous edge candidate around the
+opening, then smooths the closed radius profile. The output is intentionally
+pixel-based; physical unit conversion happens later in ``correction.py``.
+"""
+
 import numpy as np
 
 
@@ -11,6 +19,13 @@ def detect_rim_multistart(
     num_points=720,
     window_size=21,
 ):
+    """Detect a closed rim profile by scanning from multiple start angles.
+
+    A single radial walk can lock onto the wrong edge after a noisy section.
+    Running the same continuity-constrained search from several start angles
+    and taking the median makes the final profile less dependent on where the
+    scan began.
+    """
     base_theta = np.linspace(
         0,
         2 * np.pi,
@@ -18,6 +33,8 @@ def detect_rim_multistart(
         endpoint=False
     )
 
+    # Eight evenly spaced starts provide good robustness without making the UI
+    # feel sluggish. Increase this only if photos have frequent occlusions.
     start_angles = [
         0,
         np.pi / 4,
@@ -29,6 +46,8 @@ def detect_rim_multistart(
         7 * np.pi / 4,
     ]
 
+    # Search only near the expected radius so unrelated background edges are
+    # less likely to be selected as the rim.
     inner_radius = expected_radius - search_band
     outer_radius = expected_radius + search_band
 
@@ -50,6 +69,7 @@ def detect_rim_multistart(
         for theta in theta_scan:
             theta_wrapped = np.mod(theta, 2 * np.pi)
 
+            # Sample integer pixel radii along the current ray.
             radii = np.arange(inner_radius, outer_radius)
 
             xs = (
@@ -77,6 +97,9 @@ def detect_rim_multistart(
             if len(edge_indices) > 0:
                 candidate_radii = radii_valid[edge_indices]
 
+                # Choose the edge that keeps the profile continuous. Tank rims
+                # often create multiple nearby Canny edges due to lighting,
+                # thickness, or bevels.
                 selected_radius = candidate_radii[
                     np.argmin(
                         np.abs(candidate_radii - previous_radius)
@@ -87,8 +110,11 @@ def detect_rim_multistart(
                     detected_radii.append(selected_radius)
                     previous_radius = selected_radius
                 else:
+                    # Reject abrupt jumps; carrying the previous radius is less
+                    # damaging than allowing one bad edge to derail the walk.
                     detected_radii.append(previous_radius)
             else:
+                # Missing edges are expected in glare, shadows, or occlusion.
                 detected_radii.append(previous_radius)
 
         detected_radii = np.array(detected_radii)
@@ -101,6 +127,8 @@ def detect_rim_multistart(
 
     all_radius_results = np.array(all_radius_results)
 
+    # Median voting removes start-angle-specific failures while preserving the
+    # angular sample grid expected by downstream plotting and correction code.
     radius_uniform_pixels = np.median(
         all_radius_results,
         axis=0
@@ -139,7 +167,9 @@ def detect_rim_multistart(
 
 
 def circular_smooth(radius_values, window_size=21):
+    """Smooth a closed radius profile with wraparound at 0/2pi."""
     if window_size % 2 == 0:
+        # Force an odd window so each output point has a symmetric neighborhood.
         window_size += 1
 
     kernel = np.ones(window_size) / window_size
@@ -166,6 +196,7 @@ def generate_rim_coordinates(
     radius_uniform_pixels,
     theta_uniform
 ):
+    """Convert polar rim samples back to image x/y coordinates."""
     x_rim = (
         center_x
         + radius_uniform_pixels * np.cos(theta_uniform)
@@ -185,6 +216,7 @@ def generate_circle_coordinates(
     radius,
     theta_uniform
 ):
+    """Generate the expected/manual reference circle in image coordinates."""
     circle_x = center_x + radius * np.cos(theta_uniform)
     circle_y = center_y + radius * np.sin(theta_uniform)
 
